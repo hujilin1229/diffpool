@@ -1,8 +1,79 @@
 import networkx as nx
 import numpy as np
-import scipy as sc
 import os
 import re
+import random
+import torch
+from torch_geometric.data import Data
+from graph_sampler import GraphSampler
+
+
+def Graph_load_batch(datadir, dataname, max_nodes=None, node_attributes = True,graph_labels=True):
+    '''
+    load many graphs, e.g. enzymes
+    :return: a list of graphs
+    '''
+    print('Loading graph dataset: '+str(dataname))
+    G = nx.Graph()
+    # load data
+    prefix = os.path.join(datadir, dataname, dataname)
+
+    data_adj = np.loadtxt(prefix+'_A.txt', delimiter=',').astype(int)
+    data_node_label = np.loadtxt(prefix + '_node_labels.txt', delimiter=',').astype(int)
+    if node_attributes:
+        data_node_att = np.loadtxt(prefix+'_node_attributes.txt', delimiter=',')
+    else:
+        data_node_att = data_node_label.reshape(-1, 1)
+    data_graph_indicator = np.loadtxt(prefix+'_graph_indicator.txt', delimiter=',').astype(int)
+    if graph_labels:
+        data_graph_labels = np.loadtxt(prefix+'_graph_labels.txt', delimiter=',').astype(int)
+
+    data_tuple = list(map(tuple, data_adj))
+
+    # add edges
+    G.add_edges_from(data_tuple)
+    # add node attributes
+    for i in range(data_node_label.shape[0]):
+        G.add_node(i+1, feature = data_node_att[i])
+        G.add_node(i+1, label = data_node_label[i])
+    G.remove_nodes_from(list(nx.isolates(G)))
+
+    # split into graphs
+    graph_num = data_graph_indicator.max()
+    node_list = np.arange(data_graph_indicator.shape[0])+1
+    graphs = []
+    features = []
+    edge_labels = []
+    for i in range(graph_num):
+        # find the nodes for each graph
+        nodes = node_list[data_graph_indicator==i+1]
+        G_sub = G.subgraph(nodes)
+        if graph_labels:
+            G_sub.graph['label'] = data_graph_labels[i]
+
+        if max_nodes is not None and G_sub.number_of_nodes() > max_nodes:
+            continue
+        else:
+            graphs.append(G_sub)
+
+        # assign edge labels
+        n = len(nodes)
+        label = np.zeros((n, n), dtype=int)
+        for i, u in enumerate(G_sub.nodes()):
+            for j, v in enumerate(G_sub.nodes()):
+                if data_node_label[u - 1] == data_node_label[v - 1] and u > v:
+                    label[i, j] = 1
+
+        edge_labels.append(label)
+
+        # assign node features
+        idx = [node - 1 for node in nodes]
+        feature = data_node_att[idx, :]
+        features.append(feature)
+
+    print('Loaded')
+    return graphs, features, edge_labels
+
 
 def read_graphfile(datadir, dataname, max_nodes=None):
     ''' Read data from https://ls11-www.cs.tu-dortmund.de/staff/morris/graphkerneldatasets
@@ -63,8 +134,7 @@ def read_graphfile(datadir, dataname, max_nodes=None):
     #graph_labels = np.array(graph_labels)
     label_map_to_int = {val: i for i, val in enumerate(label_vals)}
     graph_labels = np.array([label_map_to_int[l] for l in graph_labels])
-    #if label_has_zero:
-    #    graph_labels += 1
+
     
     filename_adj=prefix + '_A.txt'
     adj_list={i:[] for i in range(1,len(graph_labels)+1)}    
@@ -116,3 +186,125 @@ def read_graphfile(datadir, dataname, max_nodes=None):
         graphs.append(nx.relabel_nodes(G, mapping))
     return graphs
 
+def prepare_data(graphs, args, test_graphs=None, max_nodes=0):
+
+    random.shuffle(graphs)
+    if test_graphs is None:
+        train_idx = int(len(graphs) * args.train_ratio)
+        test_idx = int(len(graphs) * (1-args.test_ratio))
+        train_graphs = graphs[:train_idx]
+        val_graphs = graphs[train_idx: test_idx]
+        test_graphs = graphs[test_idx:]
+    else:
+        train_idx = int(len(graphs) * args.train_ratio)
+        train_graphs = graphs[:train_idx]
+        val_graphs = graphs[train_idx:]
+    print('Num training graphs: ', len(train_graphs),
+          '; Num validation graphs: ', len(val_graphs),
+          '; Num testing graphs: ', len(test_graphs))
+
+    print('Number of graphs: ', len(graphs))
+    print('Number of edges: ', sum([G.number_of_edges() for G in graphs]))
+    print('Max, avg, std of graph size: ',
+            max([G.number_of_nodes() for G in graphs]), ', '
+            "{0:.2f}".format(np.mean([G.number_of_nodes() for G in graphs])), ', '
+            "{0:.2f}".format(np.std([G.number_of_nodes() for G in graphs])))
+
+    # minibatch
+    dataset_sampler = GraphSampler(train_graphs, normalize=False, max_num_nodes=max_nodes,
+            features=args.feature_type)
+    train_dataset_loader = torch.utils.data.DataLoader(
+            dataset_sampler,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers)
+
+    dataset_sampler = GraphSampler(val_graphs, normalize=False, max_num_nodes=max_nodes,
+            features=args.feature_type)
+    val_dataset_loader = torch.utils.data.DataLoader(
+            dataset_sampler,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers)
+
+    dataset_sampler = GraphSampler(test_graphs, normalize=False, max_num_nodes=max_nodes,
+            features=args.feature_type)
+    test_dataset_loader = torch.utils.data.DataLoader(
+            dataset_sampler,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers)
+
+    return train_dataset_loader, val_dataset_loader, test_dataset_loader, \
+            dataset_sampler.max_num_nodes, dataset_sampler.feat_dim, dataset_sampler.assign_feat_dim
+
+def prepare_val_data(graphs, args, val_idx, max_nodes=0):
+
+    random.shuffle(graphs)
+    val_size = len(graphs) // 10
+    train_graphs = graphs[:val_idx * val_size]
+    if val_idx < 9:
+        train_graphs = train_graphs + graphs[(val_idx+1) * val_size :]
+    val_graphs = graphs[val_idx*val_size: (val_idx+1)*val_size]
+    print('Num training graphs: ', len(train_graphs),
+          '; Num validation graphs: ', len(val_graphs))
+
+    print('Number of graphs: ', len(graphs))
+    print('Number of edges: ', sum([G.number_of_edges() for G in graphs]))
+    print('Max, avg, std of graph size: ',
+            max([G.number_of_nodes() for G in graphs]), ', '
+            "{0:.2f}".format(np.mean([G.number_of_nodes() for G in graphs])), ', '
+            "{0:.2f}".format(np.std([G.number_of_nodes() for G in graphs])))
+
+    # minibatch
+    dataset_sampler = GraphSampler(train_graphs, normalize=False, max_num_nodes=max_nodes,
+            features=args.feature_type)
+    train_dataset_loader = torch.utils.data.DataLoader(
+            dataset_sampler,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers)
+
+    dataset_sampler = GraphSampler(val_graphs, normalize=False, max_num_nodes=max_nodes,
+            features=args.feature_type)
+    val_dataset_loader = torch.utils.data.DataLoader(
+            dataset_sampler,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers)
+
+    return train_dataset_loader, val_dataset_loader, \
+            dataset_sampler.max_num_nodes, dataset_sampler.feat_dim, dataset_sampler.assign_feat_dim
+
+def nx_to_tg_data(graphs, features, edge_labels=None):
+    data_list = []
+    for i in range(len(graphs)):
+        feature = features[i]
+        graph = graphs[i].copy()
+        graph.remove_edges_from(graph.selfloop_edges())
+
+        # relabel graphs
+        keys = list(graph.nodes)
+        vals = range(graph.number_of_nodes())
+        mapping = dict(zip(keys, vals))
+        nx.relabel_nodes(graph, mapping, copy=False)
+
+        x = np.zeros(feature.shape)
+        graph_nodes = list(graph.nodes)
+        for m in range(feature.shape[0]):
+            x[graph_nodes[m]] = feature[m]
+        x = torch.from_numpy(x).float()
+
+        # get edges
+        edge_index = np.array(list(graph.edges))
+        edge_index = np.concatenate((edge_index, edge_index[:,::-1]), axis=0)
+        edge_index = torch.from_numpy(edge_index).long().permute(1,0)
+
+        data = Data(x=x, edge_index=edge_index)
+        # get edge_labels
+        if edge_labels[0] is not None:
+            edge_label = edge_labels[i]
+            mask_link_positive = np.stack(np.nonzero(edge_label))
+            data.mask_link_positive = mask_link_positive
+        data_list.append(data)
+    return data_list
