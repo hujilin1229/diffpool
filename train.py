@@ -19,6 +19,7 @@ import load_data
 import util
 from args import *
 
+
 def evaluate(dataset, model, args, name='Validation', max_num_examples=None):
     model.eval()
 
@@ -331,7 +332,7 @@ def benchmark_task_val(args, writer=None, feat='node-label'):
             featgen_const.gen_node_features(G)
 
     # TODO: 1. cvt numpy to tg.Data; 2. Assign Adj Matrix
-    dataset = load_data.nx_to_tg_data(graphs_all, features_all)
+    tg_data_list = load_data.nx_to_tg_data(graphs_all, features_all)
 
 
     for i in range(10):
@@ -339,7 +340,7 @@ def benchmark_task_val(args, writer=None, feat='node-label'):
                 load_data.prepare_val_data(graphs, args, i, max_nodes=args.max_nodes)
         if args.method == 'soft-assign':
             print('Method: soft-assign')
-            model = encoders.SoftPoolingGcnEncoder(
+            model = encoders.PaPoolingGcnEncoder(
                     max_num_nodes, 
                     input_dim, args.hidden_dim, args.output_dim, args.num_classes, args.num_gc_layers,
                     args.hidden_dim, assign_ratio=args.assign_ratio, num_pooling=args.num_pool,
@@ -347,12 +348,12 @@ def benchmark_task_val(args, writer=None, feat='node-label'):
                     assign_input_dim=assign_input_dim).cuda()
         elif args.method == 'base-set2set':
             print('Method: base-set2set')
-            model = encoders.GcnSet2SetEncoder(
+            model = encoders.PaPoolingGcnEncoder(
                     input_dim, args.hidden_dim, args.output_dim, args.num_classes,
                     args.num_gc_layers, bn=args.bn, dropout=args.dropout, args=args).cuda()
         else:
             print('Method: base')
-            model = encoders.GcnEncoderGraph(
+            model = encoders.PaPoolingGcnEncoder(
                     input_dim, args.hidden_dim, args.output_dim, args.num_classes, 
                     args.num_gc_layers, bn=args.bn, dropout=args.dropout, args=args).cuda()
 
@@ -375,7 +376,7 @@ def main():
         print('Remove existing log dir: ', path)
         shutil.rmtree(path)
     writer = SummaryWriter(path)
-    #writer = None
+    # writer = None
 
     os.environ['CUDA_VISIBLE_DEVICES'] = prog_args.cuda
     print('CUDA', prog_args.cuda)

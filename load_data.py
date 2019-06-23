@@ -186,6 +186,7 @@ def read_graphfile(datadir, dataname, max_nodes=None):
         graphs.append(nx.relabel_nodes(G, mapping))
     return graphs
 
+
 def prepare_data(graphs, args, test_graphs=None, max_nodes=0):
 
     random.shuffle(graphs)
@@ -276,7 +277,7 @@ def prepare_val_data(graphs, args, val_idx, max_nodes=0):
     return train_dataset_loader, val_dataset_loader, \
             dataset_sampler.max_num_nodes, dataset_sampler.feat_dim, dataset_sampler.assign_feat_dim
 
-def nx_to_tg_data(graphs, features, edge_labels=None):
+def nx_to_tg_data(graphs, features, edge_labels=None, num_pooling=0):
     data_list = []
     for i in range(len(graphs)):
         feature = features[i]
@@ -298,13 +299,16 @@ def nx_to_tg_data(graphs, features, edge_labels=None):
         # get edges
         edge_index = np.array(list(graph.edges))
         edge_index = np.concatenate((edge_index, edge_index[:,::-1]), axis=0)
-        edge_index = torch.from_numpy(edge_index).long().permute(1,0)
+        edge_index = torch.from_numpy(edge_index).long().permute(1, 0)
 
         data = Data(x=x, edge_index=edge_index)
+
         # get edge_labels
-        if edge_labels[0] is not None:
+        if edge_labels is not None:
             edge_label = edge_labels[i]
             mask_link_positive = np.stack(np.nonzero(edge_label))
             data.mask_link_positive = mask_link_positive
         data_list.append(data)
+
     return data_list
+

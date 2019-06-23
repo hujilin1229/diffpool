@@ -1,6 +1,5 @@
 import networkx as nx
 import numpy as np
-import torch
 import torch.utils.data
 
 class GraphSampler(torch.utils.data.Dataset):
@@ -11,7 +10,6 @@ class GraphSampler(torch.utils.data.Dataset):
         self.len_all = []
         self.feature_all = []
         self.label_all = []
-        
         self.assign_feat_all = []
 
         if max_num_nodes == 0:
@@ -46,7 +44,7 @@ class GraphSampler(torch.utils.data.Dataset):
             elif features == 'deg':
                 self.max_deg = 10
                 degs = np.sum(np.array(adj), 1).astype(int)
-                degs[degs>max_deg] = max_deg
+                degs[degs>self.max_deg] = self.max_deg
                 feat = np.zeros((len(degs), self.max_deg + 1))
                 feat[np.arange(len(degs)), degs] = 1
                 feat = np.pad(feat, ((0, self.max_num_nodes - G.number_of_nodes()), (0, 0)),
