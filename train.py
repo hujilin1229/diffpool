@@ -20,6 +20,7 @@ import util
 from args import *
 
 
+
 def evaluate(dataset, model, args, name='Validation', max_num_examples=None):
     model.eval()
 
@@ -317,27 +318,21 @@ def benchmark_task_val(args, writer=None, feat='node-label'):
     
     if feat == 'node-feat':
         print('Using node features')
-        graphs_all, features_all, _ = load_data.Graph_load_batch(
-            args.datadir, args.bmname, max_nodes=args.max_nodes, node_attributes=True)
-    elif feat == 'node-label':
-        print('Using node labels')
-        graphs_all, features_all, _ = load_data.Graph_load_batch(
-            args.datadir, args.bmname, max_nodes=args.max_nodes, node_attributes=False)
+        tg_data_list = load_data.get_tg_dataset(args, node_attributes=True)
     else:
-        print('Using constant labels')
-        graphs_all, features_all, _ = load_data.Graph_load_batch(
-            args.datadir, args.bmname, max_nodes=args.max_nodes, node_attributes=False)
-        featgen_const = featgen.ConstFeatureGen(np.ones(args.input_dim, dtype=float))
-        for G in graphs_all:
-            featgen_const.gen_node_features(G)
+        print('Using node labels')
+        tg_data_list = load_data.get_tg_dataset(args, node_attributes=False)
 
-    # TODO: 1. cvt numpy to tg.Data; 2. Assign Adj Matrix
-    tg_data_list = load_data.nx_to_tg_data(graphs_all, features_all)
-
+    device = args.device
+    # data
+    for i, data in enumerate(tg_data_list):
+        util.preselect_anchor_pooling(data, pooling_num=args.pooling_num)
+        data = data.to(device)
+        tg_data_list[i] = data
 
     for i in range(10):
         train_dataset, val_dataset, max_num_nodes, input_dim, assign_input_dim = \
-                load_data.prepare_val_data(graphs, args, i, max_nodes=args.max_nodes)
+                load_data.prepare_val_data(tg_data_list, args, i, max_nodes=args.max_nodes)
         if args.method == 'soft-assign':
             print('Method: soft-assign')
             model = encoders.PaPoolingGcnEncoder(
@@ -370,6 +365,15 @@ def benchmark_task_val(args, writer=None, feat='node-label'):
 def main():
     prog_args = arg_parse()
 
+    # set up gpu
+    if prog_args.gpu:
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(prog_args.cuda)
+        print('Using GPU {}'.format(os.environ['CUDA_VISIBLE_DEVICES']))
+    else:
+        print('Using CPU')
+    prog_args.device = torch.device('cuda:' + str(prog_args.cuda) if prog_args.gpu else 'cpu')
+
     # export scalar data to JSON for external processing
     path = os.path.join(prog_args.logdir, util.gen_prefix(prog_args))
     if os.path.isdir(path):
@@ -377,9 +381,6 @@ def main():
         shutil.rmtree(path)
     writer = SummaryWriter(path)
     # writer = None
-
-    os.environ['CUDA_VISIBLE_DEVICES'] = prog_args.cuda
-    print('CUDA', prog_args.cuda)
 
     if prog_args.bmname is not None:
         benchmark_task_val(prog_args, writer=writer)

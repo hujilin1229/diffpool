@@ -4,76 +4,11 @@ import os
 import re
 import random
 import torch
+import torch_geometric as tg
 from torch_geometric.data import Data
 from graph_sampler import GraphSampler
-
-
-def Graph_load_batch(datadir, dataname, max_nodes=None, node_attributes = True,graph_labels=True):
-    '''
-    load many graphs, e.g. enzymes
-    :return: a list of graphs
-    '''
-    print('Loading graph dataset: '+str(dataname))
-    G = nx.Graph()
-    # load data
-    prefix = os.path.join(datadir, dataname, dataname)
-
-    data_adj = np.loadtxt(prefix+'_A.txt', delimiter=',').astype(int)
-    data_node_label = np.loadtxt(prefix + '_node_labels.txt', delimiter=',').astype(int)
-    if node_attributes:
-        data_node_att = np.loadtxt(prefix+'_node_attributes.txt', delimiter=',')
-    else:
-        data_node_att = data_node_label.reshape(-1, 1)
-    data_graph_indicator = np.loadtxt(prefix+'_graph_indicator.txt', delimiter=',').astype(int)
-    if graph_labels:
-        data_graph_labels = np.loadtxt(prefix+'_graph_labels.txt', delimiter=',').astype(int)
-
-    data_tuple = list(map(tuple, data_adj))
-
-    # add edges
-    G.add_edges_from(data_tuple)
-    # add node attributes
-    for i in range(data_node_label.shape[0]):
-        G.add_node(i+1, feature = data_node_att[i])
-        G.add_node(i+1, label = data_node_label[i])
-    G.remove_nodes_from(list(nx.isolates(G)))
-
-    # split into graphs
-    graph_num = data_graph_indicator.max()
-    node_list = np.arange(data_graph_indicator.shape[0])+1
-    graphs = []
-    features = []
-    edge_labels = []
-    for i in range(graph_num):
-        # find the nodes for each graph
-        nodes = node_list[data_graph_indicator==i+1]
-        G_sub = G.subgraph(nodes)
-        if graph_labels:
-            G_sub.graph['label'] = data_graph_labels[i]
-
-        if max_nodes is not None and G_sub.number_of_nodes() > max_nodes:
-            continue
-        else:
-            graphs.append(G_sub)
-
-        # assign edge labels
-        n = len(nodes)
-        label = np.zeros((n, n), dtype=int)
-        for i, u in enumerate(G_sub.nodes()):
-            for j, v in enumerate(G_sub.nodes()):
-                if data_node_label[u - 1] == data_node_label[v - 1] and u > v:
-                    label[i, j] = 1
-
-        edge_labels.append(label)
-
-        # assign node features
-        idx = [node - 1 for node in nodes]
-        feature = data_node_att[idx, :]
-        features.append(feature)
-
-    print('Loaded')
-    return graphs, features, edge_labels
-
+import pickle
+from util import precompute_dist_data
 
 def read_graphfile(datadir, dataname, max_nodes=None):
     ''' Read data from https://ls11-www.cs.tu-dortmund.de/staff/morris/graphkerneldatasets
@@ -277,7 +212,45 @@ def prepare_val_data(graphs, args, val_idx, max_nodes=0):
     return train_dataset_loader, val_dataset_loader, \
             dataset_sampler.max_num_nodes, dataset_sampler.feat_dim, dataset_sampler.assign_feat_dim
 
-def nx_to_tg_data(graphs, features, edge_labels=None, num_pooling=0):
+def prepare_val_data_tg(tg_list, args, val_idx, max_nodes=0):
+
+    random.shuffle(tg_list)
+    val_size = len(tg_list) // 10
+    train_tg_list = tg_list[:val_idx * val_size]
+    if val_idx < 9:
+        train_tg_list = train_tg_list + tg_list[(val_idx+1) * val_size :]
+    val_tg_list = tg_list[val_idx*val_size: (val_idx+1)*val_size]
+    print('Num training graphs: ', len(train_tg_list),
+          '; Num validation graphs: ', len(val_tg_list))
+
+    print('Number of graphs: ', len(tg_list))
+    print('Number of edges: ', sum([tg.edge_index.shape[1] for tg in tg_list]))
+    print('Max, avg, std of graph size: ',
+            max([len(tg.nodes_set[0]) for tg in tg_list]), ', '
+            "{0:.2f}".format(np.mean([len(tg.nodes_set[0]) for tg in tg_list])), ', '
+            "{0:.2f}".format(np.std([len(tg.nodes_set[0]) for tg in tg_list])))
+
+    # minibatch
+    dataset_sampler = GraphSampler(train_graphs, normalize=False, max_num_nodes=max_nodes,
+            features=args.feature_type)
+    train_dataset_loader = torch.utils.data.DataLoader(
+            dataset_sampler,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers)
+
+    dataset_sampler = GraphSampler(val_graphs, normalize=False, max_num_nodes=max_nodes,
+            features=args.feature_type)
+    val_dataset_loader = torch.utils.data.DataLoader(
+            dataset_sampler,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers)
+
+    return train_dataset_loader, val_dataset_loader, \
+            dataset_sampler.max_num_nodes, dataset_sampler.feat_dim, dataset_sampler.assign_feat_dim
+
+def nx_to_tg_data(graphs, features, edge_labels=None):
     data_list = []
     for i in range(len(graphs)):
         feature = features[i]
@@ -312,3 +285,118 @@ def nx_to_tg_data(graphs, features, edge_labels=None, num_pooling=0):
 
     return data_list
 
+
+def Graph_load_batch(datadir, dataname, max_nodes=None, node_attributes = True, graph_labels=True):
+    '''
+    load many graphs, e.g. enzymes
+    :return: a list of graphs
+    '''
+    print('Loading graph dataset: '+str(dataname))
+    G = nx.Graph()
+    # load data
+    prefix = os.path.join(datadir, dataname, dataname)
+
+    data_adj = np.loadtxt(prefix+'_A.txt', delimiter=',').astype(int)
+    data_node_label = np.loadtxt(prefix + '_node_labels.txt', delimiter=',').astype(int)
+    if node_attributes:
+        data_node_att = np.loadtxt(prefix+'_node_attributes.txt', delimiter=',')
+    else:
+        data_node_att = data_node_label.reshape(-1, 1)
+    data_graph_indicator = np.loadtxt(prefix+'_graph_indicator.txt', delimiter=',').astype(int)
+    if graph_labels:
+        data_graph_labels = np.loadtxt(prefix+'_graph_labels.txt', delimiter=',').astype(int)
+
+    data_tuple = list(map(tuple, data_adj))
+
+    # add edges
+    G.add_edges_from(data_tuple)
+    # add node attributes
+    for i in range(data_node_label.shape[0]):
+        G.add_node(i+1, feature = data_node_att[i])
+        G.add_node(i+1, label = data_node_label[i])
+    G.remove_nodes_from(list(nx.isolates(G)))
+
+    # split into graphs
+    graph_num = data_graph_indicator.max()
+    node_list = np.arange(data_graph_indicator.shape[0])+1
+    graphs = []
+    features = []
+    edge_labels = []
+    for i in range(graph_num):
+        # find the nodes for each graph
+        nodes = node_list[data_graph_indicator==i+1]
+        G_sub = G.subgraph(nodes)
+        if graph_labels:
+            G_sub.graph['label'] = data_graph_labels[i]
+
+        if max_nodes is not None and G_sub.number_of_nodes() > max_nodes:
+            continue
+        else:
+            graphs.append(G_sub)
+
+        # assign edge labels
+        n = len(nodes)
+        label = np.zeros((n, n), dtype=int)
+        for i, u in enumerate(G_sub.nodes()):
+            for j, v in enumerate(G_sub.nodes()):
+                if data_node_label[u - 1] == data_node_label[v - 1] and u > v:
+                    label[i, j] = 1
+
+        edge_labels.append(label)
+
+        # assign node features
+        idx = [node - 1 for node in nodes]
+        feature = data_node_att[idx, :]
+        features.append(feature)
+
+    print('Loaded')
+    return graphs, features, edge_labels
+
+
+def load_tg_dataset(datadir, dataname, max_nodes=None, node_attributes = True, graph_labels=True):
+    graphs, features, edge_labels = Graph_load_batch(
+        datadir, dataname, max_nodes, node_attributes, graph_labels)
+
+    return nx_to_tg_data(graphs, features, edge_labels)
+
+
+def get_tg_dataset(args, node_attributes=True):
+    # "Cora", "CiteSeer" and "PubMed"
+    if args.bmname in ['Cora', 'CiteSeer', 'PubMed']:
+        dataset = tg.datasets.planetoid(root='datasets/' + args.bmname, name=args.bmname)
+    else:
+        dataset = load_tg_dataset(args.datadir, args.bmname, args.max_nodes, node_attributes=node_attributes)
+
+    # precompute shortest path
+    if not os.path.isdir('datasets/cache'):
+        os.mkdir('datasets')
+        os.mkdir('datasets/cache')
+    f1_name = 'datasets/cache/' + args.bmname + str(args.approximate) + '_dists.dat'
+
+    if args.cache and (os.path.isfile(f1_name) and args.task!='link'):
+        with open(f1_name, 'rb') as f1:
+            dists_list = pickle.load(f1)
+
+        print('Cache loaded!')
+        data_list = []
+        for i, data in enumerate(dataset):
+            data.dists = torch.from_numpy(dists_list[i]).float()
+            if args.rm_feature:
+                data.x = torch.ones((data.x.shape[0],1))
+            data_list.append(data)
+    else:
+        data_list = []
+        dists_list = []
+        for i, data in enumerate(dataset):
+            dists = precompute_dist_data(data.edge_index.numpy(), data.num_nodes, approximate=args.approximate)
+            dists_list.append(dists)
+            data.dists = torch.from_numpy(dists).float()
+            if args.rm_feature:
+                data.x = torch.ones((data.x.shape[0],1))
+            data_list.append(data)
+
+        with open(f1_name, 'wb') as f1:
+            pickle.dump(dists_list, f1)
+        print('Cache saved!')
+
+    return data_list

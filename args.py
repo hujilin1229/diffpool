@@ -25,8 +25,18 @@ def arg_parse():
             help='Directory where benchmark is located')
     parser.add_argument('--logdir', dest='logdir',
             help='Tensorboard log directory')
-    parser.add_argument('--cuda', dest='cuda',
-            help='CUDA.')
+    parser.add_argument('--cache_no', dest='cache', action='store_false',
+                        help='whether use cache')
+    parser.add_argument('--rm_feature_no', dest='rm_feature', action='store_false',
+                        help='whether rm_feature')
+    parser.add_argument('--approximate', dest='approximate', default=-1, type=int,
+                        help='k-hop shortest path distance. -1 means exact shortest path')  # -1, 2
+    parser.add_argument('--cuda', dest='cuda', default='0', type=str)
+    parser.add_argument('--gpu', dest='gpu', action='store_true',
+                        help='whether use gpu')
+    parser.add_argument('--cpu', dest='gpu', action='store_false',
+                        help='whether use cpu')
+
     parser.add_argument('--max-nodes', dest='max_nodes', type=int,
             help='Maximum number of nodes (ignore graghs with nodes exceeding the number.')
     parser.add_argument('--lr', dest='lr', type=float,
@@ -47,6 +57,8 @@ def arg_parse():
             help='Input feature dimension')
     parser.add_argument('--hidden-dim', dest='hidden_dim', type=int,
             help='Hidden dimension')
+    parser.add_argument('--pooling-num', dest='pooling_num', type=int,
+                        help='Number of poolings')
     parser.add_argument('--output-dim', dest='output_dim', type=int,
             help='Output dimension')
     parser.add_argument('--num-classes', dest='num_classes', type=int,
@@ -92,6 +104,8 @@ def arg_parse():
                         method='base',
                         name_suffix='',
                         assign_ratio=0.1,
-                        num_pool=1
+                        num_pool=1,
+                        cache=True,
+                        rm_feature=False
                        )
     return parser.parse_args()
